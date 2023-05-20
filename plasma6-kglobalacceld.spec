@@ -32,6 +32,7 @@ BuildRequires: cmake(KF6Notifications)
 BuildRequires: cmake(KF6Service)
 BuildRequires: cmake(KF6WindowSystem)
 BuildRequires: cmake(KF6GlobalAccel)
+BuildRequires: pkgconfig(x11-xcb)
 Requires: %{libname} = %{EVRD}
 
 %description
