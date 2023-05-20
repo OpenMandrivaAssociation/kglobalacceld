@@ -31,6 +31,7 @@ BuildRequires: cmake(KF6KIO)
 BuildRequires: cmake(KF6Notifications)
 BuildRequires: cmake(KF6Service)
 BuildRequires: cmake(KF6WindowSystem)
+BuildRequires: cmake(KF6GlobalAccel)
 Requires: %{libname} = %{EVRD}
 
 %description
