@@ -33,6 +33,9 @@ BuildRequires: cmake(KF6Service)
 BuildRequires: cmake(KF6WindowSystem)
 BuildRequires: cmake(KF6GlobalAccel)
 BuildRequires: pkgconfig(x11-xcb)
+BuildRequires: pkgconfig(xcb)
+BuildRequires: pkgconfig(xcb-keysyms)
+BuildRequires: pkgconfig(xcb-xkb)
 Requires: %{libname} = %{EVRD}
 
 %description
