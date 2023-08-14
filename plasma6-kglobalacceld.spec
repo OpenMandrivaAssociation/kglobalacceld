@@ -1,8 +1,8 @@
 %define libname %mklibname KGlobalAccelD
 %define devname %mklibname KGlobalAccelD -d
-%define git 20230518
+%define git 20230814
 
-Name: kf6-kglobalacceld
+Name: plasma6-kglobalacceld
 Version: 5.240.0
 Release: %{?git:0.%{git}.}1
 Source0: https://invent.kde.org/plasma/kglobalacceld/-/archive/master/kglobalacceld-master.tar.bz2#/kglobalacceld-%{git}.tar.bz2
@@ -37,6 +37,8 @@ BuildRequires: pkgconfig(xcb)
 BuildRequires: pkgconfig(xcb-keysyms)
 BuildRequires: pkgconfig(xcb-xkb)
 Requires: %{libname} = %{EVRD}
+%rename kf5-kglobalacceld
+Requires: kglobalaccel-runtime = %{EVRD}
 
 %description
 Daemon providing Global Keyboard Shortcut (Accelerator) functionality
@@ -59,6 +61,15 @@ Development files (Headers etc.) for %{name}.
 
 Daemon providing Global Keyboard Shortcut (Accelerator) functionality
 
+# This is split out so Plasma 5 can use it too.
+# Once we drop 5, this should be merged back into the main package.
+%package -n kglobalaccel-runtime
+Summary: Runtime files for KGlobalAccel 5 and 6
+Group: System/Libraries
+
+%description -n kglobalaccel-runtime
+Runtime files for KGlobalAccel 5 and 6
+
 %prep
 %autosetup -p1 -n kglobalacceld-%{?git:master}%{!?git:%{version}}
 %cmake \
@@ -75,9 +86,11 @@ Daemon providing Global Keyboard Shortcut (Accelerator) functionality
 
 %files
 %{_sysconfdir}/xdg/autostart/kglobalacceld.desktop
+
+%files -n kglobalaccel-runtime
 %{_prefix}/lib/systemd/user/plasma-kglobalaccel.service
-%{_libdir}/libexec/kglobalacceld
 %{_qtdir}/plugins/org.kde.kglobalacceld.platforms
+%{_libdir}/libexec/kglobalacceld
 
 %files -n %{devname}
 %{_includedir}/KGlobalAccelD
