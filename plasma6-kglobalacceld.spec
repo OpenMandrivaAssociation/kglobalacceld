@@ -1,6 +1,6 @@
 %define libname %mklibname KGlobalAccelD
 %define devname %mklibname KGlobalAccelD -d
-%define git 20230819
+%define git 20230825
 
 Name: plasma6-kglobalacceld
 Version: 5.240.0
