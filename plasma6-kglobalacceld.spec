@@ -3,12 +3,20 @@
 %define libname %mklibname KGlobalAccelD
 %define devname %mklibname KGlobalAccelD -d
 %define git 20240217
+%define gitbranch Plasma/6.0
+%define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
+%define gitbranch Plasma/6.0
+%define gitbranch Plasma/6.0
+%define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
+%define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
+%define gitbranch Plasma/6.0
+%define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
 
 Name: plasma6-kglobalacceld
 Version: 5.94.0
 Release: %{?git:0.%{git}.}1
 %if 0%{?git:1}
-Source0: https://invent.kde.org/plasma/kglobalacceld/-/archive/master/kglobalacceld-master.tar.bz2#/kglobalacceld-%{git}.tar.bz2
+Source0: https://invent.kde.org/plasma/kglobalacceld/-/archive/%{gitbranch}/kglobalacceld-%{gitbranchd}.tar.bz2#/kglobalacceld-%{git}.tar.bz2
 %else
 Source0: http://download.kde.org/%{stable}/plasma/%{version}/kglobalacceld-%{version}.tar.xz
 %endif
@@ -77,7 +85,7 @@ Group: System/Libraries
 Runtime files for KGlobalAccel 5 and 6
 
 %prep
-%autosetup -p1 -n kglobalacceld-%{?git:master}%{!?git:%{version}}
+%autosetup -p1 -n kglobalacceld-%{?git:%{gitbranchd}}%{!?git:%{version}}
 %cmake \
 	-DBUILD_QCH:BOOL=ON \
 	-DBUILD_WITH_QT6:BOOL=ON \
