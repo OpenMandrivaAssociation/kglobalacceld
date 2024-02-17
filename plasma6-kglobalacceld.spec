@@ -2,10 +2,10 @@
 
 %define libname %mklibname KGlobalAccelD
 %define devname %mklibname KGlobalAccelD -d
-#define git 20231103
+%define git 20240217
 
 Name: plasma6-kglobalacceld
-Version: 5.93.0
+Version: 5.94.0
 Release: %{?git:0.%{git}.}1
 %if 0%{?git:1}
 Source0: https://invent.kde.org/plasma/kglobalacceld/-/archive/master/kglobalacceld-master.tar.bz2#/kglobalacceld-%{git}.tar.bz2
