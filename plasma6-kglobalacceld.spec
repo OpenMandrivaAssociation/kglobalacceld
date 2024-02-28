@@ -2,7 +2,7 @@
 
 %define libname %mklibname KGlobalAccelD
 %define devname %mklibname KGlobalAccelD -d
-%define git 20240222
+#define git 20240222
 %define gitbranch Plasma/6.0
 %define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
 %define gitbranch Plasma/6.0
