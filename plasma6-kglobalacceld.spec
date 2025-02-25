@@ -50,6 +50,7 @@ BuildRequires: pkgconfig(x11-xcb)
 BuildRequires: pkgconfig(xcb)
 BuildRequires: pkgconfig(xcb-keysyms)
 BuildRequires: pkgconfig(xcb-xkb)
+BuildRequires: pkgconfig(xkbcommon)
 Requires: %{libname} = %{EVRD}
 %rename kf5-kglobalacceld
 Requires: kglobalaccel-runtime = %{EVRD}
