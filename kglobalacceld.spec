@@ -5,16 +5,10 @@
 #define git 20240222
 %define gitbranch Plasma/6.0
 %define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
-%define gitbranch Plasma/6.0
-%define gitbranch Plasma/6.0
-%define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
-%define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
-%define gitbranch Plasma/6.0
-%define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
 
-Name: plasma6-kglobalacceld
+Name: kglobalacceld
 Version: 6.3.4
-Release: %{?git:0.%{git}.}2
+Release: %{?git:0.%{git}.}3
 %if 0%{?git:1}
 Source0: https://invent.kde.org/plasma/kglobalacceld/-/archive/%{gitbranch}/kglobalacceld-%{gitbranchd}.tar.bz2#/kglobalacceld-%{git}.tar.bz2
 %else
@@ -51,9 +45,15 @@ BuildRequires: pkgconfig(xcb)
 BuildRequires: pkgconfig(xcb-keysyms)
 BuildRequires: pkgconfig(xcb-xkb)
 BuildRequires: pkgconfig(xkbcommon)
+BuildSystem: cmake
+BuildOption: -DBUILD_QCH:BOOL=ON
+BuildOption: -DKDE_INSTALL_USE_QT_SYS_PATHS:BOOL=ON
 Requires: %{libname} = %{EVRD}
+# This used to be split out to be shared between plasma 5 and 6
+# Merged back after dropping P5 after 6.0, 2025-04-27
+Obsoletes: kglobalaccel-runtime < %{EVRD}
+Provides: kglobalaccel-runtime = %{EVRD}
 %rename kf5-kglobalacceld
-Requires: kglobalaccel-runtime = %{EVRD}
 
 %description
 Daemon providing Global Keyboard Shortcut (Accelerator) functionality
@@ -76,33 +76,8 @@ Development files (Headers etc.) for %{name}.
 
 Daemon providing Global Keyboard Shortcut (Accelerator) functionality
 
-# This is split out so Plasma 5 can use it too.
-# Once we drop 5, this should be merged back into the main package.
-%package -n kglobalaccel-runtime
-Summary: Runtime files for KGlobalAccel 5 and 6
-Group: System/Libraries
-
-%description -n kglobalaccel-runtime
-Runtime files for KGlobalAccel 5 and 6
-
-%prep
-%autosetup -p1 -n kglobalacceld-%{?git:%{gitbranchd}}%{!?git:%{version}}
-%cmake \
-	-DBUILD_QCH:BOOL=ON \
-	-DBUILD_WITH_QT6:BOOL=ON \
-	-DKDE_INSTALL_USE_QT_SYS_PATHS:BOOL=ON \
-	-G Ninja
-
-%build
-%ninja_build -C build
-
-%install
-%ninja_install -C build
-
 %files
 %{_sysconfdir}/xdg/autostart/kglobalacceld.desktop
-
-%files -n kglobalaccel-runtime
 %{_prefix}/lib/systemd/user/plasma-kglobalaccel.service
 %{_qtdir}/plugins/org.kde.kglobalacceld.platforms
 %{_libdir}/libexec/kglobalacceld
