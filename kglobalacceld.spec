@@ -54,6 +54,7 @@ Requires: %{libname} = %{EVRD}
 Obsoletes: kglobalaccel-runtime < %{EVRD}
 Provides: kglobalaccel-runtime = %{EVRD}
 %rename kf5-kglobalacceld
+%rename plasma6-kglobalacceld
 
 %description
 Daemon providing Global Keyboard Shortcut (Accelerator) functionality
