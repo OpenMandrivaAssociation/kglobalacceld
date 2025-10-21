@@ -7,7 +7,7 @@
 %define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
 
 Name: kglobalacceld
-Version: 6.4.5
+Version: 6.5.0
 Release: %{?git:0.%{git}.}1
 %if 0%{?git:1}
 Source0: https://invent.kde.org/plasma/kglobalacceld/-/archive/%{gitbranch}/kglobalacceld-%{gitbranchd}.tar.bz2#/kglobalacceld-%{git}.tar.bz2
@@ -79,6 +79,7 @@ Daemon providing Global Keyboard Shortcut (Accelerator) functionality
 
 %files
 %{_sysconfdir}/xdg/autostart/kglobalacceld.desktop
+%{_datadir}/qlogging-categories6/kglobalacceld.categories
 %{_prefix}/lib/systemd/user/plasma-kglobalaccel.service
 %{_qtdir}/plugins/org.kde.kglobalacceld.platforms
 %{_libdir}/libexec/kglobalacceld
