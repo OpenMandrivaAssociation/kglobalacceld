@@ -7,13 +7,17 @@
 %define gitbranchd %(echo %{gitbranch} |sed -e "s,/,-,g")
 
 Name: kglobalacceld
-Version: 6.7.5
-Release: %{?git:0.%{git}.}2
+Version: 6.8.0
+Release: %{?git:0.%{git}.}1
 %if 0%{?git:1}
 Source0: https://invent.kde.org/plasma/kglobalacceld/-/archive/%{gitbranch}/kglobalacceld-%{gitbranchd}.tar.bz2#/kglobalacceld-%{git}.tar.bz2
 %else
 Source0: http://download.kde.org/%{stable}/plasma/%{version}/kglobalacceld-%{version}.tar.xz
 %endif
+# 6.8 turned this into a library that KWin calls in-process on Wayland.
+# Restore the X11 daemon and XCB grabber. The daemon exits immediately when
+# XDG_SESSION_TYPE=wayland so it does not take org.kde.kglobalaccel from KWin.
+Patch0: kglobalacceld-6.8.0-keep-x11.patch
 Summary: Daemon providing Global Keyboard Shortcut (Accelerator) functionality
 URL: https://invent.kde.org/plasma/kglobalacceld
 License: CC0-1.0 LGPL-2.0+ LGPL-2.1 LGPL-3.0
@@ -44,7 +48,13 @@ BuildRequires: pkgconfig(x11-xcb)
 BuildRequires: pkgconfig(xcb)
 BuildRequires: pkgconfig(xcb-keysyms)
 BuildRequires: pkgconfig(xcb-xkb)
+BuildRequires: pkgconfig(xcb-record)
 BuildRequires: pkgconfig(xkbcommon)
+BuildRequires: cmake(Qt6Widgets)
+BuildRequires: cmake(Qt6GuiPrivate)
+BuildRequires: cmake(KF6Crash)
+BuildRequires: cmake(KF6DBusAddons)
+BuildRequires: cmake(KF6WindowSystem)
 BuildSystem: cmake
 BuildOption: -DBUILD_QCH:BOOL=ON
 BuildOption: -DKDE_INSTALL_USE_QT_SYS_PATHS:BOOL=ON

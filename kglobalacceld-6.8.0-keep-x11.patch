@@ -1,0 +1,1452 @@
+diff -ruN kglobalacceld-pristine/CMakeLists.txt kglobalacceld/CMakeLists.txt
+--- kglobalacceld-pristine/CMakeLists.txt	2026-10-08 13:17:58.000000000 +0200
++++ kglobalacceld/CMakeLists.txt	2026-10-18 18:52:49.138166125 +0200
+@@ -46,6 +46,26 @@
+ find_package(KF6KIO ${KF6_MIN_VERSION} REQUIRED)
+ find_package(KF6JobWidgets ${KF6_MIN_VERSION} REQUIRED)
+ 
++# X11 global shortcuts still need a standalone daemon. KWin 6.8 only calls
++# KGlobalAccelD::keyEvent() on Wayland; kwin-x11 does not grab on a real X11
++# session. The library itself keeps the 6.8 API (no KGlobalAccelInterface).
++option(WITH_X11 "Build the X11 kglobalacceld daemon and XCB platform plugin." ON)
++
++if(WITH_X11)
++    find_package(Qt6 ${QT_MIN_VERSION} CONFIG REQUIRED Widgets)
++    find_package(Qt6GuiPrivate ${QT_MIN_VERSION} REQUIRED NO_MODULE)
++    find_package(KF6Crash ${KF6_MIN_VERSION} REQUIRED)
++    find_package(KF6DBusAddons ${KF6_MIN_VERSION} REQUIRED)
++    find_package(KF6WindowSystem ${KF6_MIN_VERSION} REQUIRED)
++    find_package(XCB MODULE COMPONENTS XCB KEYSYMS XKB RECORD)
++    set_package_properties(XCB PROPERTIES DESCRIPTION "X protocol C-language Binding"
++                        TYPE REQUIRED
++                        )
++    set(HAVE_X11 1)
++else()
++    set(HAVE_X11 0)
++endif()
++
+ find_program(qdbus_EXECUTABLE NAMES qdbus qdbus6 qdbus-qt6)
+ 
+ if (NOT qdbus_EXECUTABLE)
+diff -ruN kglobalacceld-pristine/src/CMakeLists.txt kglobalacceld/src/CMakeLists.txt
+--- kglobalacceld-pristine/src/CMakeLists.txt	2026-10-08 13:17:58.000000000 +0200
++++ kglobalacceld/src/CMakeLists.txt	2026-10-18 18:52:49.150930334 +0200
+@@ -1,5 +1,6 @@
+ set(kglobalaccelprivate_SRCS
+     kglobalacceld.cpp
++    kglobalaccel_platform.cpp
+     kserviceactioncomponent.cpp
+     component.cpp
+     globalshortcut.cpp
+@@ -8,6 +9,8 @@
+     sequencehelpers_p.cpp
+ )
+ 
++configure_file(config-kglobalaccel.h.cmake ${CMAKE_CURRENT_BINARY_DIR}/config-kglobalaccel.h)
++
+ add_library(KGlobalAccelD ${kglobalaccelprivate_SRCS})
+ add_library(K::KGlobalAccelD ALIAS KGlobalAccelD)
+ 
+@@ -44,6 +47,12 @@
+         KF6::JobWidgets
+ )
+ 
++if(HAVE_X11)
++    # Runtime X11 checks only. Wayland never calls QX11Info; these stay PRIVATE
++    # so the installed KGlobalAccelD cmake config matches 6.8.
++    target_link_libraries(KGlobalAccelD PRIVATE Qt6::GuiPrivate KF6::WindowSystem)
++endif()
++
+ set_target_properties(KGlobalAccelD PROPERTIES VERSION ${KGLOBALACCELD_VERSION}
+                                                 SOVERSION ${KGLOBALACCELD_SOVERSION}
+                                                 EXPORT_NAME "KGlobalAccelD"
+@@ -59,3 +68,31 @@
+ )
+ 
+ install(TARGETS KGlobalAccelD EXPORT KGlobalAccelDTargets ${KF_INSTALL_TARGETS_DEFAULT_ARGS} LIBRARY NAMELINK_SKIP)
++
++if(HAVE_X11)
++    add_executable(kglobalacceld main.cpp)
++
++    target_include_directories(kglobalacceld PRIVATE ${CMAKE_BINARY_DIR})
++
++    target_link_libraries(kglobalacceld
++        KGlobalAccelD
++        KF6::CoreAddons
++        KF6::DBusAddons   # KDBusService
++        KF6::Crash
++        )
++
++    add_subdirectory(plugins)
++
++    install(TARGETS kglobalacceld DESTINATION ${KDE_INSTALL_LIBEXECDIR})
++
++    include(ECMConfiguredInstall)
++    ecm_install_configured_files(
++       INPUT plasma-kglobalaccel.service.in
++       DESTINATION ${KDE_INSTALL_SYSTEMDUSERUNITDIR}
++    )
++
++    ecm_install_configured_files(
++        INPUT kglobalacceld.desktop.in
++        DESTINATION ${KDE_INSTALL_AUTOSTARTDIR} @ONLY
++    )
++endif()
+diff -ruN kglobalacceld-pristine/src/component.cpp kglobalacceld/src/component.cpp
+--- kglobalacceld-pristine/src/component.cpp	2026-10-08 13:17:58.000000000 +0200
++++ kglobalacceld/src/component.cpp	2026-10-18 18:52:49.145682503 +0200
+@@ -6,6 +6,7 @@
+ 
+ #include "component.h"
+ 
++#include "config-kglobalaccel.h"
+ #include "globalshortcutcontext.h"
+ #include "globalshortcutsregistry.h"
+ #include "logging.h"
+@@ -14,6 +15,10 @@
+ #include <QKeySequence>
+ #include <QStringList>
+ 
++#if HAVE_X11
++#include <private/qtx11extras_p.h>
++#endif
++
+ using namespace Qt::StringLiterals;
+ 
+ QSet<QKeySequence> Component::keysFromString(const QString &str)
+@@ -173,7 +178,13 @@
+ 
+ void Component::emitGlobalShortcutEvent(const GlobalShortcut &shortcut, ShortcutKeyState state)
+ {
+-    const long timestamp = 0;
++    qlonglong timestamp = 0;
++#if HAVE_X11
++    // X11 clients use the event time. On Wayland this stays 0, matching 6.8.
++    if (QX11Info::isPlatformX11()) {
++        timestamp = QX11Info::appTime();
++    }
++#endif
+ 
+     if (shortcut.context()->component() != this) {
+         return;
+diff -ruN kglobalacceld-pristine/src/config-kglobalaccel.h.cmake kglobalacceld/src/config-kglobalaccel.h.cmake
+--- kglobalacceld-pristine/src/config-kglobalaccel.h.cmake	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/config-kglobalaccel.h.cmake	2026-10-18 18:52:05.169995176 +0200
+@@ -0,0 +1 @@
++#cmakedefine01 HAVE_X11
+diff -ruN kglobalacceld-pristine/src/globalshortcutsregistry.cpp kglobalacceld/src/globalshortcutsregistry.cpp
+--- kglobalacceld-pristine/src/globalshortcutsregistry.cpp	2026-10-08 13:17:58.000000000 +0200
++++ kglobalacceld/src/globalshortcutsregistry.cpp	2026-10-18 18:53:35.891009292 +0200
+@@ -9,8 +9,10 @@
+ 
+ #include "globalshortcutsregistry.h"
+ #include "component.h"
++#include "config-kglobalaccel.h"
+ #include "globalshortcut.h"
+ #include "globalshortcutcontext.h"
++#include "kglobalaccel_platform.h"
+ #include "kglobalshortcutinfo_p.h"
+ #include "kserviceactioncomponent.h"
+ #include "logging.h"
+@@ -19,16 +21,90 @@
+ #include <KApplicationTrader>
+ #include <KDesktopFile>
+ #include <KFileUtils>
++#include <KPluginMetaData>
+ #include <KSycoca>
+ 
+ #include <QDBusConnection>
+ #include <QDir>
++#include <QGuiApplication>
++#include <QJsonArray>
++#include <QJsonObject>
++#include <QJsonValue>
++#include <QPluginLoader>
+ #include <QStandardPaths>
+ 
+ #include <algorithm>
+ 
+ using namespace Qt::StringLiterals;
+ 
++static bool checkPlatform(const QJsonObject &metadata, const QString &platformName)
++{
++    const QJsonArray platforms = metadata.value(QStringLiteral("MetaData")).toObject().value(QStringLiteral("platforms")).toArray();
++    return std::any_of(platforms.begin(), platforms.end(), [&platformName](const QJsonValue &value) {
++        return QString::compare(platformName, value.toString(), Qt::CaseInsensitive) == 0;
++    });
++}
++
++static KGlobalAccelPlatform *loadX11Platform(GlobalShortcutsRegistry *parent, KGlobalAccelD *globalAccel)
++{
++#if !HAVE_X11
++    Q_UNUSED(parent)
++    Q_UNUSED(globalAccel)
++    return nullptr;
++#else
++    // Wayland KWin hosts this library and must not grab. The daemon also
++    // refuses to start on Wayland, so the bus name stays with KWin.
++    if (!kglobalaccelX11GrabAllowed()) {
++        qCDebug(KGLOBALACCELD) << "Wayland session: not loading the X11 key grabber";
++        return nullptr;
++    }
++
++    QString platformName = QString::fromLocal8Bit(qgetenv("KGLOBALACCELD_PLATFORM"));
++    if (platformName.isEmpty()) {
++        platformName = QGuiApplication::platformName();
++    }
++    if (platformName.compare(QLatin1String("xcb"), Qt::CaseInsensitive) != 0) {
++        qCDebug(KGLOBALACCELD) << "No X11 key grabber for platform" << platformName;
++        return nullptr;
++    }
++
++    const QList<QStaticPlugin> staticPlugins = QPluginLoader::staticPlugins();
++    for (const QStaticPlugin &staticPlugin : staticPlugins) {
++        const QJsonObject metadata = staticPlugin.metaData();
++        if (metadata.value(QLatin1String("IID")) != QLatin1String(KGlobalAccelPlatform_iid)) {
++            continue;
++        }
++        if (checkPlatform(metadata, platformName)) {
++            auto *interface = qobject_cast<KGlobalAccelPlatform *>(staticPlugin.instance());
++            if (interface) {
++                qCDebug(KGLOBALACCELD) << "Loaded a static plugin for platform" << platformName;
++                interface->setRegistry(parent);
++                interface->setGlobalAccelD(globalAccel);
++                return interface;
++            }
++        }
++    }
++
++    const QList<KPluginMetaData> candidates = KPluginMetaData::findPlugins(QStringLiteral("org.kde.kglobalacceld.platforms"));
++    for (const KPluginMetaData &candidate : candidates) {
++        QPluginLoader loader(candidate.fileName());
++        if (!checkPlatform(loader.metaData(), platformName)) {
++            continue;
++        }
++        auto *interface = qobject_cast<KGlobalAccelPlatform *>(loader.instance());
++        if (interface) {
++            qCDebug(KGLOBALACCELD) << "Loaded plugin" << candidate.fileName() << "for platform" << platformName;
++            interface->setRegistry(parent);
++            interface->setGlobalAccelD(globalAccel);
++            return interface;
++        }
++    }
++
++    qCWarning(KGLOBALACCELD) << "Could not find any X11 platform plugin";
++    return nullptr;
++#endif
++}
++
+ void GlobalShortcutsRegistry::migrateKHotkeys()
+ {
+     KConfig hotkeys(QStringLiteral("khotkeysrc"));
+@@ -220,11 +296,14 @@
+     _config.sync();
+ }
+ 
+-GlobalShortcutsRegistry::GlobalShortcutsRegistry()
++GlobalShortcutsRegistry::GlobalShortcutsRegistry(KGlobalAccelD *globalAccel)
+     : QObject()
+     , _config(QStringLiteral("kglobalshortcutsrc"), KConfig::SimpleConfig, QStandardPaths::GenericConfigLocation)
+     , _state(QStringLiteral("kglobalshortcutsstaterc"), KConfig::SimpleConfig, QStandardPaths::GenericStateLocation)
+ {
++    // Grabber is null on Wayland, so registerKey keeps the 6.8 no-grab path.
++    _grabber = loadX11Platform(this, globalAccel);
++
+     migrateKHotkeys();
+     migrateConfig();
+ 
+@@ -240,7 +319,19 @@
+ GlobalShortcutsRegistry::~GlobalShortcutsRegistry()
+ {
+     m_components.clear();
++
++    if (_grabber) {
++        // Components already unregister. This covers keys still held if a
++        // shortcut object did not go through unregisterKey.
++        const auto listKeys = _active_keys.keys();
++        for (const QKeySequence &key : listKeys) {
++            for (int i = 0; i < key.count(); i++) {
++                _grabber->grabKey(key[i].toCombined(), false);
++            }
++        }
++    }
+     _active_keys.clear();
++    _keys_count.clear();
+ }
+ 
+ Component *GlobalShortcutsRegistry::registerComponent(ComponentPtr component)
+@@ -334,14 +425,42 @@
+ 
+ GlobalShortcut *GlobalShortcutsRegistry::activeShortcutByKey(const QKeySequence &keySequence) const
+ {
+-    const auto range = _active_keys.equal_range(keySequence);
+-    if (range.first == range.second) {
+-        return nullptr;
++    // Wayland / no grabber: unchanged 6.8 lookup. KWin registers every key,
++    // including modifiers, in _active_keys.
++    if (!_grabber) {
++        const auto range = _active_keys.equal_range(keySequence);
++        if (range.first == range.second) {
++            return nullptr;
++        }
++
++        QVarLengthArray<GlobalShortcut *, 4> shortcuts;
++        for (auto it = range.first; it != range.second; ++it) {
++            shortcuts.append(*it);
++        }
++
++        if (shortcuts.size() == 1) {
++            return shortcuts[0];
++        }
++
++        std::sort(shortcuts.begin(), shortcuts.end(), [](const auto &a, const auto &b) {
++            return a->serial() < b->serial();
++        });
++
++        return shortcuts[0];
+     }
+ 
++    // X11 grabKey() returns false for modifier-only keys, so those shortcuts
++    // never land in _active_keys. Search components, as 6.7 did.
+     QVarLengthArray<GlobalShortcut *, 4> shortcuts;
+-    for (auto it = range.first; it != range.second; ++it) {
+-        shortcuts.append(*it);
++    for (const ComponentPtr &component : m_components) {
++        const auto candidates = component->getShortcutsByKey(keySequence, KGlobalAccel::Equal);
++        for (const auto candidate : candidates) {
++            shortcuts.append(candidate);
++        }
++    }
++
++    if (shortcuts.isEmpty()) {
++        return nullptr;
+     }
+ 
+     if (shortcuts.size() == 1) {
+@@ -778,6 +897,16 @@
+     }
+ }
+ 
++void GlobalShortcutsRegistry::grabKeys()
++{
++    activateShortcuts();
++}
++
++void GlobalShortcutsRegistry::ungrabKeys()
++{
++    deactivateShortcuts();
++}
++
+ bool GlobalShortcutsRegistry::registerKey(const QKeySequence &key, GlobalShortcut *shortcut)
+ {
+     if (key.isEmpty()) {
+@@ -790,6 +919,47 @@
+     qCDebug(KGLOBALACCELD) << "Registering key" << QKeySequence(key).toString() << "for" << shortcut->context()->component()->uniqueName() << ":"
+                            << shortcut->uniqueName();
+ 
++    // No grabber (Wayland, or the daemon not on xcb): 6.8 behavior, just record the key.
++    if (_grabber) {
++        bool error = false;
++        int i;
++        for (i = 0; i < key.count(); i++) {
++            const int combined = key[i].toCombined();
++
++            auto it = _keys_count.find(combined);
++            if (it != _keys_count.end()) {
++                ++*it;
++                continue;
++            }
++
++            if (!_grabber->grabKey(combined, true)) {
++                error = true;
++                break;
++            }
++
++            ++_keys_count[combined];
++        }
++
++        if (error) {
++            // Last key was not registered, rewind index by 1
++            for (--i; i >= 0; i--) {
++                const int combined = key[i].toCombined();
++                auto it = _keys_count.find(combined);
++                if (it == _keys_count.end()) {
++                    continue;
++                }
++
++                if (it.value() == 1) {
++                    _keys_count.erase(it);
++                    _grabber->grabKey(combined, false);
++                } else {
++                    --(it.value());
++                }
++            }
++            return false;
++        }
++    }
++
+     _active_keys.insert(key, shortcut);
+ 
+     return true;
+@@ -802,6 +972,26 @@
+         return false;
+     }
+ 
++    if (_grabber) {
++        for (int i = 0; i < key.count(); i++) {
++            auto iter = _keys_count.find(key[i].toCombined());
++            if ((iter == _keys_count.end()) || (iter.value() <= 0)) {
++                continue;
++            }
++
++            if (iter.value() == 1) {
++                qCDebug(KGLOBALACCELD) << "Unregistering key" << QKeySequence(key[i]).toString() << "for" << shortcut->context()->component()->uniqueName()
++                                       << ":" << shortcut->uniqueName();
++
++                _grabber->grabKey(key[i].toCombined(), false);
++                _keys_count.erase(iter);
++            } else {
++                qCDebug(KGLOBALACCELD) << "Refused to unregister key" << QKeySequence(key[i]).toString() << ": used by another global shortcut";
++                --(iter.value());
++            }
++        }
++    }
++
+     if (shortcut && shortcut == m_lastShortcut) {
+         m_lastShortcut->context()->component()->emitGlobalShortcutEvent(*m_lastShortcut, ShortcutKeyState::Released);
+         m_lastShortcut = nullptr;
+diff -ruN kglobalacceld-pristine/src/globalshortcutsregistry.h kglobalacceld/src/globalshortcutsregistry.h
+--- kglobalacceld-pristine/src/globalshortcutsregistry.h	2026-10-08 13:17:58.000000000 +0200
++++ kglobalacceld/src/globalshortcutsregistry.h	2026-10-18 18:54:38.329384483 +0200
+@@ -29,6 +29,8 @@
+ 
+ class Component;
+ class GlobalShortcut;
++class KGlobalAccelD;
++class KGlobalAccelPlatform;
+ 
+ /**
+  * Global Shortcut Registry.
+@@ -52,7 +54,7 @@
+     Q_CLASSINFO("D-Bus Interface", "org.kde.KdedGlobalAccel.GlobalShortcutsRegistry")
+ 
+ public:
+-    GlobalShortcutsRegistry();
++    explicit GlobalShortcutsRegistry(KGlobalAccelD *globalAccel = nullptr);
+     ~GlobalShortcutsRegistry() override;
+ 
+     /**
+@@ -132,6 +134,13 @@
+ 
+     void writeSettings();
+ 
++    // Re-grab every shortcut. Used by the X11 plugin after a keymap change.
++    // No-op aside from activateShortcuts() when no platform plugin is loaded.
++    void grabKeys();
++
++    // Ungrab the keys.
++    void ungrabKeys();
++
+ Q_SIGNALS:
+     void needsSave();
+ 
+@@ -163,8 +172,13 @@
+     bool processKey(int keyQt, ShortcutKeyState state);
+ 
+     QMultiHash<QKeySequence, GlobalShortcut *> _active_keys;
++    QHash<int, int> _keys_count;
+     QKeySequence _active_sequence;
+ 
++    // Non-null only when the X11 platform plugin is loaded. Wayland leaves
++    // this null and never grabs.
++    KGlobalAccelPlatform *_grabber = nullptr;
++
+     Qt::KeyboardModifiers m_currentModifiers;
+     // State machine:
+     // Any -> PressingModifierOnly when a modifier is pressed
+diff -ruN kglobalacceld-pristine/src/kglobalaccel_platform.cpp kglobalacceld/src/kglobalaccel_platform.cpp
+--- kglobalacceld-pristine/src/kglobalaccel_platform.cpp	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/kglobalaccel_platform.cpp	2026-10-18 18:52:05.169995176 +0200
+@@ -0,0 +1,51 @@
++/*
++    This file is part of the KDE libraries
++    SPDX-FileCopyrightText: 2015 Martin Gräßlin <mgraesslin@kde.org>
++
++    SPDX-License-Identifier: LGPL-2.0-or-later
++*/
++
++#include "kglobalaccel_platform.h"
++
++#include "globalshortcutsregistry.h"
++
++KGlobalAccelPlatform::KGlobalAccelPlatform(QObject *parent)
++    : QObject(parent)
++{
++}
++
++KGlobalAccelPlatform::~KGlobalAccelPlatform() = default;
++
++void KGlobalAccelPlatform::setRegistry(GlobalShortcutsRegistry *registry)
++{
++    m_registry = registry;
++    if (registry) {
++        setParent(registry);
++    }
++}
++
++void KGlobalAccelPlatform::setGlobalAccelD(KGlobalAccelD *globalAccel)
++{
++    m_globalAccel = globalAccel;
++}
++
++KGlobalAccelD *KGlobalAccelPlatform::globalAccel() const
++{
++    return m_globalAccel;
++}
++
++void KGlobalAccelPlatform::grabKeys()
++{
++    if (m_registry) {
++        m_registry->grabKeys();
++    }
++}
++
++void KGlobalAccelPlatform::ungrabKeys()
++{
++    if (m_registry) {
++        m_registry->ungrabKeys();
++    }
++}
++
++#include "moc_kglobalaccel_platform.cpp"
+diff -ruN kglobalacceld-pristine/src/kglobalaccel_platform.h kglobalacceld/src/kglobalaccel_platform.h
+--- kglobalacceld-pristine/src/kglobalaccel_platform.h	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/kglobalaccel_platform.h	2026-10-18 18:52:05.169995176 +0200
+@@ -0,0 +1,71 @@
++/*
++    This file is part of the KDE libraries
++    SPDX-FileCopyrightText: 2015 Martin Gräßlin <mgraesslin@kde.org>
++
++    SPDX-License-Identifier: LGPL-2.0-or-later
++*/
++
++#ifndef KGLOBALACCEL_PLATFORM_H
++#define KGLOBALACCEL_PLATFORM_H
++
++#include "kglobalacceld_export.h"
++
++#include <QByteArray>
++#include <QObject>
++
++class GlobalShortcutsRegistry;
++class KGlobalAccelD;
++
++#define KGlobalAccelPlatform_iid "org.kde.kglobalacceld.KGlobalAccelPlatform"
++
++/**
++ * X11 (and test) platform plugins implement grabKey().
++ * Key delivery goes through KGlobalAccelD, not this class: there is no
++ * KGlobalAccelInterface in 6.8.
++ *
++ * Not installed. Wayland KWin does not load a platform plugin and calls
++ * KGlobalAccelD::keyEvent() itself.
++ */
++class KGLOBALACCELD_EXPORT KGlobalAccelPlatform : public QObject
++{
++    Q_OBJECT
++
++public:
++    explicit KGlobalAccelPlatform(QObject *parent);
++    ~KGlobalAccelPlatform() override;
++
++    virtual bool grabKey(int key, bool grab) = 0;
++
++    void setRegistry(GlobalShortcutsRegistry *registry);
++    void setGlobalAccelD(KGlobalAccelD *globalAccel);
++
++protected:
++    void grabKeys();
++    void ungrabKeys();
++    KGlobalAccelD *globalAccel() const;
++
++private:
++    GlobalShortcutsRegistry *m_registry = nullptr;
++    KGlobalAccelD *m_globalAccel = nullptr;
++};
++
++Q_DECLARE_INTERFACE(KGlobalAccelPlatform, KGlobalAccelPlatform_iid)
++
++/**
++ * False on a Wayland session so the X11 grabber is not loaded inside KWin.
++ * XDG_SESSION_TYPE=x11 wins over a stray WAYLAND_DISPLAY.
++ * If the session type is missing, WAYLAND_DISPLAY means Wayland.
++ */
++inline bool kglobalaccelX11GrabAllowed()
++{
++    const QByteArray sessionType = qgetenv("XDG_SESSION_TYPE").toLower();
++    if (sessionType == "wayland") {
++        return false;
++    }
++    if (sessionType == "x11") {
++        return true;
++    }
++    return qgetenv("WAYLAND_DISPLAY").isEmpty();
++}
++
++#endif
+diff -ruN kglobalacceld-pristine/src/kglobalacceld.cpp kglobalacceld/src/kglobalacceld.cpp
+--- kglobalacceld-pristine/src/kglobalacceld.cpp	2026-10-08 13:17:58.000000000 +0200
++++ kglobalacceld/src/kglobalacceld.cpp	2026-10-18 18:52:49.142556737 +0200
+@@ -158,7 +158,7 @@
+     : QObject()
+     , d(new KGlobalAccelDPrivate(this))
+ {
+-    d->m_registry = std::make_unique<GlobalShortcutsRegistry>();
++    d->m_registry = std::make_unique<GlobalShortcutsRegistry>(this);
+ }
+ 
+ bool KGlobalAccelD::init()
+diff -ruN kglobalacceld-pristine/src/kglobalacceld.desktop.in kglobalacceld/src/kglobalacceld.desktop.in
+--- kglobalacceld-pristine/src/kglobalacceld.desktop.in	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/kglobalacceld.desktop.in	2026-09-08 12:52:22.000000000 +0200
+@@ -0,0 +1,48 @@
++[Desktop Entry]
++Type=Application
++Name=Global Shortcuts
++Name[ar]=اختصارات عامة
++Name[ast]=Atayos globales
++Name[bg]=Глобални клавишни комбинации
++Name[ca]=Dreceres globals
++Name[ca@valencia]=Dreceres globals
++Name[cs]=Globální zkratky
++Name[de]=Globale Kurzbefehle
++Name[en_GB]=Global Shortcuts
++Name[eo]=Ĉieaj Ŝparvojoj
++Name[es]=Atajo de teclado globales
++Name[eu]=Lasterbide globalak
++Name[fa]=میان‌بر های چهانی
++Name[fi]=Työpöydänlaajuiset pikanäppäimet
++Name[fr]=Raccourcis globaux
++Name[ga]=Aicearraí Comhchoiteanna
++Name[gl]=Atallos globais
++Name[he]=קיצורי מקשים מקיפים
++Name[hi]=वैश्विक शॉर्टकट
++Name[hu]=Globális gyorsbillentyűk
++Name[ia]=Vias Breve Global
++Name[is]=Víðværir flýtilyklar
++Name[it]=Scorciatoie globali
++Name[ka]=გლობალური მალსახმობები
++Name[ko]=전역 단축키
++Name[lt]=Visuotiniai spartieji klavišai
++Name[lv]=Globālās saīsnes
++Name[nl]=Globale sneltoetsen
++Name[nn]=Globale snarvegar
++Name[pa]=ਗਲੋਬਲ ਸ਼ਾਰਟਕੱਟ
++Name[pl]=Skróty globalne
++Name[pt_BR]=Atalhos globais
++Name[ro]=Scurtături globale
++Name[ru]=Глобальные комбинации клавиш
++Name[sa]=वैश्विक संक्षिप्तमार्गाः
++Name[sk]=Globálne skratky
++Name[sl]=Globalne bližnjice
++Name[ta]=முழுதளாவிய சுருக்குவழிகள்
++Name[tr]=Global Kısayollar
++Name[uk]=Загальні скорочення
++Name[zh_CN]=全局快捷键
++Name[zh_TW]=全域快捷鍵
++Exec=@KDE_INSTALL_FULL_LIBEXECDIR@/kglobalacceld
++NoDisplay=true
++OnlyShowIn=KDE;
++X-systemd-skip=true
+diff -ruN kglobalacceld-pristine/src/kserviceactioncomponent.cpp kglobalacceld/src/kserviceactioncomponent.cpp
+--- kglobalacceld-pristine/src/kserviceactioncomponent.cpp	2026-10-08 13:17:58.000000000 +0200
++++ kglobalacceld/src/kserviceactioncomponent.cpp	2026-10-18 18:52:49.145682503 +0200
+@@ -12,10 +12,17 @@
+ 
+ #include <QFileInfo>
+ 
++#include "config-kglobalaccel.h"
++
+ #include <KIO/ApplicationLauncherJob>
+ #include <KIO/UntrustedProgramHandlerInterface>
+ #include <KNotificationJobUiDelegate>
+ 
++#if HAVE_X11
++#include <KStartupInfo>
++#include <private/qtx11extras_p.h>
++#endif
++
+ class UntrustedProgramHandler : public KIO::UntrustedProgramHandlerInterface
+ {
+ public:
+@@ -75,6 +82,13 @@
+     // to avoid that add our own UntrustedProgramHandler that accepts the launch regardless
+     new UntrustedProgramHandler(delegate);
+     job->setUiDelegate(delegate);
++#if HAVE_X11
++    if (QX11Info::isPlatformX11()) {
++        // Create a startup id ourselves. Otherwise ApplicationLauncherJob will query X11 to get a timestamp, which causes a deadlock
++        auto startupId = KStartupInfo::createNewStartupIdForTimestamp(QX11Info::appTime());
++        job->setStartupId(startupId);
++    }
++#endif
+     job->start();
+ }
+ 
+diff -ruN kglobalacceld-pristine/src/main.cpp kglobalacceld/src/main.cpp
+--- kglobalacceld-pristine/src/main.cpp	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/main.cpp	2026-10-18 18:52:15.282108185 +0200
+@@ -0,0 +1,70 @@
++/*
++    This file is part of the KDE project
++
++    SPDX-FileCopyrightText: 2007 Andreas Hartmetz <ahartmetz@gmail.com>
++    SPDX-FileCopyrightText: 2007 Michael Jansen <kde@michael-jansen.biz>
++
++    SPDX-License-Identifier: LGPL-2.0-or-later
++*/
++
++#include "kglobalaccel_platform.h"
++#include "kglobalaccel_version.h"
++#include "kglobalacceld.h"
++
++#include <KAboutData>
++#include <KCrash>
++#include <KDBusService>
++#include <QCommandLineParser>
++#include <QGuiApplication>
++
++int main(int argc, char **argv)
++{
++    // Wayland: KWin 6.8 constructs KGlobalAccelD in-process and calls keyEvent().
++    // Exit before QGuiApplication / KDBusService / registerService so this process
++    // does not own org.kde.kglobalaccel and does not grab keys.
++    // XDG_SESSION_TYPE=wayland is enough, even when XWayland exports DISPLAY.
++    // An explicit x11 session still requires DISPLAY; anything else with
++    // WAYLAND_DISPLAY set is treated as Wayland.
++    if (!kglobalaccelX11GrabAllowed() || qgetenv("DISPLAY").isEmpty()) {
++        return 0;
++    }
++
++    QCoreApplication::setAttribute(Qt::AA_DisableSessionManager);
++
++    QGuiApplication::setDesktopSettingsAware(false);
++    QGuiApplication::setQuitLockEnabled(false);
++    QGuiApplication app(argc, argv);
++    KAboutData aboutdata(QStringLiteral("kglobalaccel"),
++                         QObject::tr("KDE Global Shortcuts Service"),
++                         QStringLiteral(KGLOBALACCEL_VERSION_STRING),
++                         QObject::tr("KDE Global Shortcuts Service"),
++                         KAboutLicense::LGPL,
++                         QStringLiteral("(C) 2007-2009  Andreas Hartmetz, Michael Jansen"));
++    aboutdata.addAuthor(QStringLiteral("Andreas Hartmetz"), QObject::tr("Maintainer"), QStringLiteral("ahartmetz@gmail.com"));
++    aboutdata.addAuthor(QStringLiteral("Michael Jansen"), QObject::tr("Maintainer"), QStringLiteral("kde@michael-jansen.biz"));
++
++    KAboutData::setApplicationData(aboutdata);
++
++    KCrash::initialize();
++
++    {
++        QCommandLineParser parser;
++        aboutdata.setupCommandLine(&parser);
++        parser.process(app);
++        aboutdata.processCommandLine(&parser);
++    }
++
++    KDBusService service(KDBusService::Unique);
++
++    app.setQuitOnLastWindowClosed(false);
++
++    // Restart on a crash
++    KCrash::setFlags(KCrash::AutoRestart);
++
++    KGlobalAccelD globalaccel;
++    if (!globalaccel.init()) {
++        return -1;
++    }
++
++    return app.exec();
++}
+diff -ruN kglobalacceld-pristine/src/plasma-kglobalaccel.service.in kglobalacceld/src/plasma-kglobalaccel.service.in
+--- kglobalacceld-pristine/src/plasma-kglobalaccel.service.in	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/plasma-kglobalaccel.service.in	2026-09-08 12:52:22.000000000 +0200
+@@ -0,0 +1,12 @@
++[Unit]
++Description=KDE Global Shortcuts Server
++PartOf=graphical-session.target
++
++[Service]
++ExecStart=@KDE_INSTALL_FULL_LIBEXECDIR@/kglobalacceld
++BusName=org.kde.kglobalaccel
++Slice=background.slice
++TimeoutSec=5sec
++Restart=on-failure
++# Exit status 1 is used when the X11 connection drops
++RestartPreventExitStatus=1
+diff -ruN kglobalacceld-pristine/src/plugins/CMakeLists.txt kglobalacceld/src/plugins/CMakeLists.txt
+--- kglobalacceld-pristine/src/plugins/CMakeLists.txt	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/plugins/CMakeLists.txt	2026-10-18 18:52:05.169995176 +0200
+@@ -0,0 +1,3 @@
++if (XCB_XCB_FOUND AND XCB_KEYSYMS_FOUND AND XCB_XKB_FOUND AND XCB_RECORD_FOUND)
++    add_subdirectory(xcb)
++endif()
+diff -ruN kglobalacceld-pristine/src/plugins/xcb/CMakeLists.txt kglobalacceld/src/plugins/xcb/CMakeLists.txt
+--- kglobalacceld-pristine/src/plugins/xcb/CMakeLists.txt	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/plugins/xcb/CMakeLists.txt	2026-10-18 18:52:05.169995176 +0200
+@@ -0,0 +1,23 @@
++set(xcb_plugin_SRCS
++    kglobalaccel_x11.cpp
++    kglobalaccel_x11.h
++)
++
++add_library(KGlobalAccelDXcb MODULE ${xcb_plugin_SRCS})
++target_link_libraries(KGlobalAccelDXcb
++    KGlobalAccelD
++    KF6::WindowSystem
++    Qt6::Widgets
++    Qt6::GuiPrivate
++    XCB::XCB
++    XCB::KEYSYMS
++    XCB::XKB
++    XCB::RECORD
++)
++
++install(
++    TARGETS
++        KGlobalAccelDXcb
++    DESTINATION
++        ${KDE_INSTALL_PLUGINDIR}/org.kde.kglobalacceld.platforms/
++)
+diff -ruN kglobalacceld-pristine/src/plugins/xcb/kglobalaccel_x11.cpp kglobalacceld/src/plugins/xcb/kglobalaccel_x11.cpp
+--- kglobalacceld-pristine/src/plugins/xcb/kglobalaccel_x11.cpp	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/plugins/xcb/kglobalaccel_x11.cpp	2026-10-18 18:52:25.468007590 +0200
+@@ -0,0 +1,540 @@
++/*
++    This file is part of the KDE libraries
++    SPDX-FileCopyrightText: 2001, 2002 Ellis Whitehead <ellis@kde.org>
++    SPDX-FileCopyrightText: 2013 Martin Gräßlin <mgraesslin@kde.org>
++
++    SPDX-License-Identifier: LGPL-2.0-or-later
++*/
++
++#include "kglobalaccel_x11.h"
++
++#include "kglobalacceld.h"
++#include "logging.h"
++#include "shortcutkeystate.h"
++
++#include <KKeyServer>
++#include <netwm.h>
++
++// Plugin-local category. The library defines the same name with hidden
++// visibility, so the daemon module needs its own definition.
++Q_LOGGING_CATEGORY(KGLOBALACCELD, "kf.globalaccel.kglobalacceld", QtInfoMsg)
++
++// Same spelling as KWin::KeyboardKeyState. X11 auto-repeat arrives as another
++// KeyPress; 6.7 mapped that to Pressed, not Repeated.
++enum class KeyboardKeyState {
++    Pressed,
++    Repeated,
++    Released,
++};
++
++static ShortcutKeyState toShortcutKeyState(KeyboardKeyState state)
++{
++    switch (state) {
++    case KeyboardKeyState::Pressed:
++        return ShortcutKeyState::Pressed;
++    case KeyboardKeyState::Repeated:
++        return ShortcutKeyState::Repeated;
++    case KeyboardKeyState::Released:
++        return ShortcutKeyState::Released;
++    }
++    return ShortcutKeyState::Pressed;
++}
++
++#include <QDebug>
++#include <QSocketNotifier>
++
++#include <QApplication>
++#include <QTimer>
++#include <QWidget>
++#include <private/qtx11extras_p.h>
++
++#include <X11/keysym.h>
++
++// xcb
++
++// It uses "explicit" as a variable name, which is not allowed in C++
++#define explicit xcb_explicit
++#include <xcb/record.h>
++#include <xcb/xcb.h>
++#include <xcb/xcb_keysyms.h>
++#include <xcb/xcbext.h>
++#include <xcb/xkb.h>
++#undef explicit
++
++// g_keyModMaskXAccel
++//	mask of modifiers which can be used in shortcuts
++//	(meta, alt, ctrl, shift)
++// g_keyModMaskXOnOrOff
++//	mask of modifiers where we don't care whether they are on or off
++//	(caps lock, num lock, scroll lock)
++static uint g_keyModMaskXAccel = 0;
++static uint g_keyModMaskXOnOrOff = 0;
++
++static void calculateGrabMasks()
++{
++    g_keyModMaskXAccel = KKeyServer::accelModMaskX();
++    g_keyModMaskXOnOrOff = KKeyServer::modXLock() | KKeyServer::modXNumLock() | KKeyServer::modXScrollLock() | KKeyServer::modXModeSwitch();
++    // qCDebug(KGLOBALACCELD) << "g_keyModMaskXAccel = " << g_keyModMaskXAccel
++    //	<< "g_keyModMaskXOnOrOff = " << g_keyModMaskXOnOrOff << endl;
++}
++
++//----------------------------------------------------
++
++KGlobalAccelImpl::KGlobalAccelImpl(QObject *parent)
++    : KGlobalAccelPlatform(parent)
++    , m_keySymbols(nullptr)
++    , m_xkb_first_event(0)
++{
++    Q_ASSERT(QX11Info::connection());
++
++    int events = XCB_EVENT_MASK_KEY_PRESS | XCB_EVENT_MASK_KEY_RELEASE;
++    xcb_change_window_attributes(QX11Info::connection(), QX11Info::appRootWindow(), XCB_CW_EVENT_MASK, &events);
++
++    const xcb_query_extension_reply_t *reply = xcb_get_extension_data(QX11Info::connection(), &xcb_xkb_id);
++    if (reply && reply->present) {
++        m_xkb_first_event = reply->first_event;
++    }
++
++    // We use XRecord to get events XCB_KEY_PRESS, XCB_KEY_RELEASE, XCB_BUTTON_PRESS
++    // This is needed to correctly handle modifier-only shortcuts, so that they don't trigger
++    // on Mod+Click, or Mod+Key; release Key; release Mod
++    // We also handle the events here, instead of in the nativeEventFilter
++    m_display = XOpenDisplay(nullptr);
++    m_connection = xcb_connect(XDisplayString((Display *)m_display), nullptr);
++    auto context = xcb_generate_id(m_connection);
++    xcb_record_range_t range;
++    memset(&range, 0, sizeof(range));
++    range.device_events.first = XCB_KEY_PRESS;
++    range.device_events.last = XCB_BUTTON_PRESS;
++    range.core_requests.first = XCB_GRAB_KEYBOARD;
++    range.core_requests.last = XCB_UNGRAB_KEYBOARD;
++    xcb_record_client_spec_t cs = XCB_RECORD_CS_ALL_CLIENTS;
++    xcb_record_create_context(m_connection, context, 0, 1, 1, &cs, &range);
++    auto cookie = xcb_record_enable_context(m_connection, context);
++    xcb_flush(m_connection);
++
++    m_xrecordCookieSequence = cookie.sequence;
++
++    auto m_notifier = new QSocketNotifier(xcb_get_file_descriptor(m_connection), QSocketNotifier::Read, this);
++    connect(m_notifier, &QSocketNotifier::activated, this, [this] {
++        xcb_generic_event_t *event;
++        while ((event = xcb_poll_for_event(m_connection))) {
++            std::free(event);
++        }
++
++        xcb_record_enable_context_reply_t *reply = nullptr;
++        xcb_generic_error_t *error = nullptr;
++        while (m_xrecordCookieSequence && xcb_poll_for_reply(m_connection, m_xrecordCookieSequence, (void **)&reply, &error)) {
++            // xcb_poll_for_reply may set both reply and error to null if connection has error.
++            // break if xcb_connection has error, no point to continue anyway.
++            if (xcb_connection_has_error(m_connection)) {
++                break;
++            }
++
++            if (error) {
++                std::free(error);
++                break;
++            }
++
++            if (!reply) {
++                continue;
++            }
++
++            QScopedPointer<xcb_record_enable_context_reply_t, QScopedPointerPodDeleter> data(reinterpret_cast<xcb_record_enable_context_reply_t *>(reply));
++            uint8_t *events = xcb_record_enable_context_data(reply);
++            uint8_t *const eventsEnd = events + xcb_record_enable_context_data_length(reply);
++            while (events < eventsEnd) {
++                qCDebug(KGLOBALACCELD) << "Got XKeyRelease event";
++                switch (*events) {
++                case XCB_KEY_PRESS: {
++                    // only handle modifier keys here, so as not to trigger when
++                    // event is grabbed by other clients; handle normal keys in
++                    // nativeEventFilter
++                    xcb_key_press_event_t *keyPressEvent = reinterpret_cast<xcb_key_press_event_t *>(events);
++                    events += sizeof(xcb_key_press_event_t);
++                    if (m_keyboardGrabbed) {
++                        break;
++                    }
++                    int keyQt;
++                    if (!KKeyServer::xcbKeyPressEventToQt(keyPressEvent, &keyQt)) {
++                        qCWarning(KGLOBALACCELD) << "KKeyServer::xcbKeyPressEventToQt failed";
++                        break;
++                    }
++                    switch (keyQt & ~Qt::KeyboardModifierMask) {
++                    case Qt::Key_Shift:
++                    case Qt::Key_Control:
++                    case Qt::Key_Alt:
++                    case Qt::Key_Super_L:
++                    case Qt::Key_Super_R:
++                    case Qt::Key_Meta:
++                        x11KeyPress(keyPressEvent);
++                        break;
++                    default:
++                        // even though we don't handle the key, we need to update the state machine
++                        if (globalAccel()) {
++                            globalAccel()->resetModifierOnlyState();
++                        }
++                        break;
++                    }
++                } break;
++                case XCB_KEY_RELEASE: {
++                    xcb_key_press_event_t *keyReleaseEvent = reinterpret_cast<xcb_key_press_event_t *>(events);
++                    events += sizeof(xcb_key_release_event_t);
++                    if (m_keyboardGrabbed) {
++                        break;
++                    }
++                    x11KeyRelease(keyReleaseEvent);
++                } break;
++                case XCB_BUTTON_PRESS: {
++                    xcb_button_press_event_t *buttonPressEvent = reinterpret_cast<xcb_button_press_event_t *>(events);
++                    x11ButtonPress(buttonPressEvent);
++                    events += sizeof(xcb_button_press_event_t);
++                } break;
++                case XCB_UNGRAB_KEYBOARD:
++                    m_keyboardGrabbed = false;
++                    events += sizeof(xcb_ungrab_keyboard_request_t);
++                    break;
++                case XCB_GRAB_KEYBOARD:
++                    m_keyboardGrabbed = true;
++                    events += sizeof(xcb_grab_keyboard_request_t);
++                    break;
++                default:
++                    // Impossible
++                    Q_UNREACHABLE();
++                    qCWarning(KGLOBALACCELD) << "Got unknown event type" << *events;
++                    events = eventsEnd; // exit the while loop
++                    break;
++                }
++            }
++        }
++    });
++    m_notifier->setEnabled(true);
++
++    calculateGrabMasks();
++
++    m_remapTimer = new QTimer(this);
++    m_remapTimer->setSingleShot(true);
++    connect(m_remapTimer, &QTimer::timeout, this, &KGlobalAccelImpl::x11MappingNotify);
++
++    if (QCoreApplication *app = QCoreApplication::instance()) {
++        app->installNativeEventFilter(this);
++    }
++}
++
++KGlobalAccelImpl::~KGlobalAccelImpl()
++{
++    xcb_disconnect(m_connection);
++    XCloseDisplay((Display *)m_display);
++    if (m_keySymbols) {
++        xcb_key_symbols_free(m_keySymbols);
++    }
++}
++
++bool KGlobalAccelImpl::grabKey(int keyQt, bool grab)
++{
++    // don't grab modifier only keys
++    switch (keyQt & ~Qt::KeyboardModifierMask) {
++    case Qt::Key_Shift:
++    case Qt::Key_Control:
++    case Qt::Key_Alt:
++    case Qt::Key_Meta:
++    case Qt::Key_Super_L:
++    case Qt::Key_Super_R:
++    case 0:
++        return false;
++    }
++    // grabKey is called during shutdown
++    // shutdown might be due to the X server being killed
++    // if so, fail immediately before trying to make other xcb calls
++    if (!QX11Info::connection() || xcb_connection_has_error(QX11Info::connection())) {
++        return false;
++    }
++
++    if (!m_keySymbols) {
++        m_keySymbols = xcb_key_symbols_alloc(QX11Info::connection());
++        if (!m_keySymbols) {
++            return false;
++        }
++    }
++
++    if (!keyQt) {
++        qCDebug(KGLOBALACCELD) << "Tried to grab key with null code.";
++        return false;
++    }
++
++    uint keyModX;
++
++    // Resolve the modifier
++    if (!KKeyServer::keyQtToModX(keyQt, &keyModX)) {
++        qCDebug(KGLOBALACCELD) << "keyQt (0x" << Qt::hex << keyQt << ") failed to resolve to x11 modifier";
++        return false;
++    }
++
++    // Resolve the X symbol
++    const QList<int> keySymXs(KKeyServer::keyQtToSymXs(keyQt));
++    if (keySymXs.empty()) {
++        qCDebug(KGLOBALACCELD) << "keyQt (0x" << Qt::hex << keyQt << ") failed to resolve to x11 keycode";
++        return false;
++    }
++    xcb_keycode_t *keyCodes = nullptr;
++    xcb_keysym_t keySymX;
++    for (xcb_keysym_t sym : keySymXs) {
++        keyCodes = xcb_key_symbols_get_keycode(m_keySymbols, sym);
++        if (keyCodes) {
++            keySymX = sym;
++            break;
++        }
++    }
++
++    if (!keyCodes) {
++        return false;
++    }
++    int i = 0;
++    bool success = !grab;
++    while (keyCodes[i] != XCB_NO_SYMBOL) {
++        xcb_keycode_t keyCodeX = keyCodes[i++];
++
++        // Check if shift needs to be added to the grab since KKeySequenceWidget
++        // can remove shift for some keys. (all the %&* and such)
++        /* clang-format off */
++        if (!(keyQt & Qt::SHIFT)
++            && !KKeyServer::isShiftAsModifierAllowed(keyQt)
++            && !(keyQt & Qt::KeypadModifier)
++            && keySymX != xcb_key_symbols_get_keysym(m_keySymbols, keyCodeX, 0)
++            && keySymX == xcb_key_symbols_get_keysym(m_keySymbols, keyCodeX, 1)) { /* clang-format on */
++            qCDebug(KGLOBALACCELD) << "adding shift to the grab";
++            keyModX |= KKeyServer::modXShift();
++        }
++
++        keyModX &= g_keyModMaskXAccel; // Get rid of any non-relevant bits in mod
++
++        if (!keyCodeX) {
++            qCDebug(KGLOBALACCELD) << "keyQt (0x" << Qt::hex << keyQt << ") was resolved to x11 keycode 0";
++            continue;
++        }
++
++        // We'll have to grab 8 key modifier combinations in order to cover all
++        //  combinations of CapsLock, NumLock, ScrollLock.
++        // Does anyone with more X-savvy know how to set a mask on QX11Info::appRootWindow so that
++        //  the irrelevant bits are always ignored and we can just make one XGrabKey
++        //  call per accelerator? -- ellis
++#ifndef NDEBUG
++        QString sDebug = QStringLiteral("\tcode: 0x%1 state: 0x%2 | ").arg(keyCodeX, 0, 16).arg(keyModX, 0, 16);
++#endif
++        uint keyModMaskX = ~g_keyModMaskXOnOrOff;
++        QList<xcb_void_cookie_t> cookies;
++        for (uint irrelevantBitsMask = 0; irrelevantBitsMask <= 0xff; irrelevantBitsMask++) {
++            if ((irrelevantBitsMask & keyModMaskX) == 0) {
++#ifndef NDEBUG
++                sDebug += QStringLiteral("0x%3, ").arg(irrelevantBitsMask, 0, 16);
++#endif
++                if (grab) {
++                    cookies << xcb_grab_key_checked(QX11Info::connection(),
++                                                    true,
++                                                    QX11Info::appRootWindow(),
++                                                    keyModX | irrelevantBitsMask,
++                                                    keyCodeX,
++                                                    XCB_GRAB_MODE_ASYNC,
++                                                    XCB_GRAB_MODE_SYNC);
++                } else {
++                    /* clang-format off */
++                    cookies << xcb_ungrab_key_checked(QX11Info::connection(),
++                                                      keyCodeX, QX11Info::appRootWindow(),
++                                                      keyModX | irrelevantBitsMask);
++                    /* clang-format on */
++                }
++            }
++        }
++
++        bool failed = false;
++        if (grab) {
++            for (int i = 0; i < cookies.size(); ++i) {
++                QScopedPointer<xcb_generic_error_t, QScopedPointerPodDeleter> error(xcb_request_check(QX11Info::connection(), cookies.at(i)));
++                if (!error.isNull()) {
++                    failed = true;
++                }
++            }
++            if (failed) {
++                qCDebug(KGLOBALACCELD) << "grab failed!\n";
++                for (uint m = 0; m <= 0xff; m++) {
++                    if ((m & keyModMaskX) == 0) {
++                        xcb_ungrab_key(QX11Info::connection(), keyCodeX, QX11Info::appRootWindow(), keyModX | m);
++                    }
++                }
++            } else {
++                success = true;
++            }
++        }
++    }
++    free(keyCodes);
++    return success;
++}
++
++bool KGlobalAccelImpl::nativeEventFilter(const QByteArray &eventType, void *message, qintptr *)
++{
++    if (eventType != "xcb_generic_event_t") {
++        return false;
++    }
++
++    xcb_generic_event_t *event = reinterpret_cast<xcb_generic_event_t *>(message);
++    const uint8_t responseType = event->response_type & ~0x80;
++    if (responseType == XCB_MAPPING_NOTIFY) {
++        qCDebug(KGLOBALACCELD) << "Got XCB_MAPPING_NOTIFY event";
++        scheduleX11MappingNotify();
++
++    } else if (responseType == XCB_KEY_PRESS) {
++        qCDebug(KGLOBALACCELD) << "Got XKeyPress event";
++        return x11KeyPress(reinterpret_cast<xcb_key_press_event_t *>(event));
++    } else if (m_xkb_first_event && responseType == m_xkb_first_event) {
++        const uint8_t xkbEvent = event->pad0;
++        switch (xkbEvent) {
++        case XCB_XKB_MAP_NOTIFY:
++            qCDebug(KGLOBALACCELD) << "Got XCB_XKB_MAP_NOTIFY event";
++            scheduleX11MappingNotify();
++            break;
++        case XCB_XKB_NEW_KEYBOARD_NOTIFY: {
++            const xcb_xkb_new_keyboard_notify_event_t *ev = reinterpret_cast<xcb_xkb_new_keyboard_notify_event_t *>(event);
++            if (ev->changed & XCB_XKB_NKN_DETAIL_KEYCODES) {
++                qCDebug(KGLOBALACCELD) << "Got XCB_XKB_NEW_KEYBOARD_NOTIFY event with XCB_XKB_NKN_DETAIL_KEYCODES";
++                scheduleX11MappingNotify();
++            }
++            break;
++        }
++        default:
++            break;
++        }
++    }
++    // else... we get all xcb_generic_event_t. Just ignore the ones we don't care about.
++
++    // Make sure to let Qt handle the event as well
++    return false;
++}
++
++void KGlobalAccelImpl::scheduleX11MappingNotify()
++{
++    // Prevent high CPU usage due to mass key remappings.
++    // x11MappingNotify() is fairly expensive, and in case the user modifies the whole keyboard using
++    // xmodmap, which apparently happens key by key, kglobalacceld used to spend over one minute in
++    // x11MappingNotify(). This bundling of changes reduces time spent to a few seconds and shouldn't
++    // delay application of changes enough to be noticeable - in fact, kglobalacceld will be done much
++    // more quickly, effectively *reducing* latency.
++    if (!m_remapTimer->isActive()) {
++        m_remapTimer->start(20);
++    }
++}
++
++void KGlobalAccelImpl::x11MappingNotify()
++{
++    qCDebug(KGLOBALACCELD) << "Re-mapping keys";
++    // Maybe the X modifier map has been changed.
++    // uint oldKeyModMaskXAccel = g_keyModMaskXAccel;
++    // uint oldKeyModMaskXOnOrOff = g_keyModMaskXOnOrOff;
++
++    // First ungrab all currently grabbed keys. This is needed because we
++    // store the keys as qt keycodes and use KKeyServer to map them to x11 key
++    // codes. After calling KKeyServer::initializeMods() they could map to
++    // different keycodes.
++    ungrabKeys();
++
++    if (m_keySymbols) {
++        // Force reloading of the keySym mapping
++        xcb_key_symbols_free(m_keySymbols);
++        m_keySymbols = nullptr;
++    }
++
++    KKeyServer::initializeMods();
++    calculateGrabMasks();
++
++    grabKeys();
++}
++
++bool KGlobalAccelImpl::x11KeyPress(xcb_key_press_event_t *pEvent)
++{
++    if (QWidget::keyboardGrabber() || QApplication::activePopupWidget()) {
++        qCWarning(KGLOBALACCELD) << "kglobalacceld should be popup and keyboard grabbing free!";
++    }
++
++    // Keyboard needs to be ungrabed after XGrabKey() activates the grab,
++    // otherwise it becomes frozen.
++    xcb_connection_t *c = QX11Info::connection();
++    xcb_void_cookie_t cookie = xcb_ungrab_keyboard_checked(c, XCB_TIME_CURRENT_TIME);
++    xcb_flush(c);
++    // xcb_flush() only makes sure that the ungrab keyboard request has been
++    // sent, but is not enough to make sure that request has been fulfilled. Use
++    // xcb_request_check() to make sure that the request has been processed.
++    xcb_request_check(c, cookie);
++
++    int keyQt;
++    if (!KKeyServer::xcbKeyPressEventToQt(pEvent, &keyQt)) {
++        qCWarning(KGLOBALACCELD) << "KKeyServer::xcbKeyPressEventToQt failed";
++        return false;
++    }
++    // qDebug() << "keyQt=" << QString::number(keyQt, 16);
++
++    // All that work for this hey... argh...
++    if (NET::timestampCompare(pEvent->time, QX11Info::appTime()) > 0) {
++        QX11Info::setAppTime(pEvent->time);
++    }
++    if (!globalAccel()) {
++        return false;
++    }
++    return globalAccel()->keyEvent(keyQt, toShortcutKeyState(KeyboardKeyState::Pressed));
++}
++
++bool KGlobalAccelImpl::x11KeyRelease(xcb_key_release_event_t *pEvent)
++{
++    if (QWidget::keyboardGrabber() || QApplication::activePopupWidget()) {
++        qCWarning(KGLOBALACCELD) << "kglobalacceld should be popup and keyboard grabbing free!";
++    }
++
++    int keyQt;
++    if (!KKeyServer::xcbKeyPressEventToQt(pEvent, &keyQt)) {
++        return false;
++    }
++    if (!globalAccel()) {
++        return false;
++    }
++    return globalAccel()->keyEvent(keyQt, toShortcutKeyState(KeyboardKeyState::Released));
++}
++
++bool KGlobalAccelImpl::x11ButtonPress(xcb_button_press_event_t *event)
++{
++    if (!globalAccel()) {
++        return false;
++    }
++
++    // X11 buttons 4-7 are pointer axes (vertical and horizontal wheel).
++    switch (event->detail) {
++    case 4:
++    case 5:
++    case 6:
++    case 7:
++        return globalAccel()->axisTriggered(event->detail);
++    default:
++        break;
++    }
++
++    Qt::MouseButtons buttons = Qt::NoButton;
++    switch (event->detail) {
++    case 1:
++        buttons = Qt::LeftButton;
++        break;
++    case 2:
++        buttons = Qt::MiddleButton;
++        break;
++    case 3:
++        buttons = Qt::RightButton;
++        break;
++    case 8:
++        buttons = Qt::XButton1;
++        break;
++    case 9:
++        buttons = Qt::XButton2;
++        break;
++    default:
++        break;
++    }
++    return globalAccel()->pointerPressed(buttons);
++}
++
++#include "moc_kglobalaccel_x11.cpp"
+diff -ruN kglobalacceld-pristine/src/plugins/xcb/kglobalaccel_x11.h kglobalacceld/src/plugins/xcb/kglobalaccel_x11.h
+--- kglobalacceld-pristine/src/plugins/xcb/kglobalaccel_x11.h	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/plugins/xcb/kglobalaccel_x11.h	2026-10-18 18:52:15.279946910 +0200
+@@ -0,0 +1,78 @@
++/*
++    This file is part of the KDE libraries
++    SPDX-FileCopyrightText: 2001, 2002 Ellis Whitehead <ellis@kde.org>
++
++    SPDX-License-Identifier: LGPL-2.0-or-later
++*/
++
++#ifndef _KGLOBALACCEL_X11_H
++#define _KGLOBALACCEL_X11_H
++
++#include "../../kglobalaccel_platform.h"
++
++#include <QAbstractNativeEventFilter>
++
++struct xcb_key_press_event_t;
++struct xcb_connection_t;
++typedef xcb_key_press_event_t xcb_key_release_event_t;
++struct xcb_button_press_event_t;
++typedef struct _XCBKeySymbols xcb_key_symbols_t;
++class QTimer;
++
++/**
++ * @internal
++ *
++ * Grabs global keys on X11 and forwards them to KGlobalAccelD.
++ * Not used on Wayland: the daemon exits before this plugin is loaded,
++ * and KWin calls KGlobalAccelD::keyEvent() itself.
++ */
++class KGlobalAccelImpl : public KGlobalAccelPlatform, public QAbstractNativeEventFilter
++{
++    Q_OBJECT
++    Q_PLUGIN_METADATA(IID "org.kde.kglobalacceld.KGlobalAccelPlatform" FILE "xcb.json")
++    Q_INTERFACES(KGlobalAccelPlatform)
++
++public:
++    KGlobalAccelImpl(QObject *parent = nullptr);
++    ~KGlobalAccelImpl() override;
++
++    /**
++     * This function registers or unregisters a certain key for global capture,
++     * depending on \b grab.
++     *
++     * Before destruction, every grabbed key will be released, so this
++     * object does not need to do any tracking.
++     *
++     * \param key the Qt keycode to grab or release.
++     * \param grab true to grab they key, false to release the key.
++     *
++     * \return true if successful, otherwise false.
++     */
++    bool grabKey(int key, bool grab) override;
++
++    bool nativeEventFilter(const QByteArray &eventType, void *message, qintptr *) override;
++
++private:
++    void scheduleX11MappingNotify();
++    void x11MappingNotify();
++    /**
++     * Filters X11 events ev for key bindings in the accelerator dictionary.
++     * If a match is found the activated activated is emitted and the function
++     * returns true. Return false if the event is not processed.
++     *
++     * This is public for compatibility only. You do not need to call it.
++     */
++    bool x11KeyPress(xcb_key_press_event_t *event);
++    bool x11KeyRelease(xcb_key_release_event_t *event);
++    bool x11ButtonPress(xcb_button_press_event_t *event);
++
++    xcb_key_symbols_t *m_keySymbols;
++    uint8_t m_xkb_first_event;
++    void *m_display;
++    xcb_connection_t *m_connection;
++    unsigned int m_xrecordCookieSequence;
++    QTimer *m_remapTimer;
++    bool m_keyboardGrabbed = false;
++};
++
++#endif // _KGLOBALACCEL_X11_H
+diff -ruN kglobalacceld-pristine/src/plugins/xcb/xcb.json kglobalacceld/src/plugins/xcb/xcb.json
+--- kglobalacceld-pristine/src/plugins/xcb/xcb.json	1970-01-01 01:00:00.000000000 +0100
++++ kglobalacceld/src/plugins/xcb/xcb.json	2026-09-08 12:52:22.000000000 +0200
+@@ -0,0 +1,3 @@
++{
++    "platforms": ["xcb"]
++}
